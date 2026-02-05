@@ -6,6 +6,7 @@ from io import BytesIO
 # --- CONFIGURACIÓN ---
 st.set_page_config(page_title="Sistema Proyecciones PRO", layout="wide")
 
+# Conexión Segura
 try:
     supabase: Client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 except Exception as e:
@@ -21,24 +22,24 @@ def generar_excel(df):
 # --- DIALOG: EDICIÓN MÚLTIPLE ---
 @st.dialog("Editar Kg de Registros Seleccionados", width="large")
 def editar_multiple(filas_seleccionadas):
-    st.info("Solo se permite la edición de Kilogramos. El Cliente y Producto son informativos.")
+    st.info("Modifica los Kilogramos. El Cliente y Producto no son editables.")
     
-    # Lista para almacenar los nuevos valores de cada fila
     cambios_a_realizar = []
     
+    # Mostrar cada fila seleccionada para editar
     for i, fila in filas_seleccionadas.iterrows():
         with st.container(border=True):
             st.markdown(f"**Cliente:** {fila['cliente']} | **Producto:** {fila['producto']}")
             
-            # Input de KG (Solo editable)
+            # Input de KG
             n_kg = st.number_input(
-                f"Kg Proyectados para ID: {fila['id']}", 
+                f"Kg Proyectados (ID: {fila['id']})", 
                 value=float(fila['total_kg']), 
                 min_value=0.0,
-                key=f"kg_input_{fila['id']}"
+                key=f"input_edit_{fila['id']}"
             )
             
-            # Calculamos proporcionalmente el dinero (total_s) basado en el precio anterior
+            # Recalcular soles (total_s) manteniendo el precio unitario
             precio_unitario = fila['total_s'] / fila['total_kg'] if fila['total_kg'] > 0 else 0
             n_s = n_kg * precio_unitario
             
@@ -53,26 +54,27 @@ def editar_multiple(filas_seleccionadas):
     
     with col1:
         if st.button("💾 GUARDAR TODOS LOS CAMBIOS", type="primary", use_container_width=True):
-            with st.spinner("Actualizando registros en la nube..."):
+            with st.spinner("Guardando en Supabase..."):
                 try:
                     for cambio in cambios_a_realizar:
+                        # Ejecutamos la actualización fila por fila
                         supabase.table("ventas").update({
                             "total_kg": cambio["total_kg"],
                             "total_s": cambio["total_s"]
                         }).eq("id", cambio["id"]).execute()
                     
-                    st.success("¡Datos actualizados con éxito!")
-                    st.session_state.clear # Limpiamos caché para forzar recarga
-                    st.rerun() # Refrescamos la página
+                    st.success("¡Guardado correctamente!")
+                    # USAR st.rerun() SOLITO PARA REFRESCAR TODO
+                    st.rerun() 
                 except Exception as err:
-                    st.error(f"Error técnico al guardar: {err}")
+                    st.error(f"Error al guardar: {err}")
             
     with col2:
         if st.button("🗑️ ELIMINAR SELECCIONADOS", use_container_width=True):
-            with st.spinner("Eliminando registros..."):
+            with st.spinner("Eliminando..."):
                 try:
-                    ids_a_borrar = filas_seleccionadas["id"].tolist()
-                    for id_b in ids_a_borrar:
+                    ids = filas_seleccionadas["id"].tolist()
+                    for id_b in ids:
                         supabase.table("ventas").delete().eq("id", id_b).execute()
                     st.rerun()
                 except Exception as err:
@@ -85,56 +87,52 @@ if st.session_state.autenticado:
     # Sidebar
     st.sidebar.title(f"Usuario: {st.session_state.usuario_logueado}")
     mes_consulta = st.sidebar.selectbox("Mes de consulta", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
-    ver_consolidado = st.sidebar.toggle("Ver Consolidado (3 meses anteriores)")
+    ver_consolidado = st.sidebar.toggle("Ver Consolidado")
 
-    # Carga de ventas desde Supabase
-    try:
-        res_v = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).execute()
-        df_ventas = pd.DataFrame(res_v.data) if res_v.data else pd.DataFrame()
-    except:
-        df_ventas = pd.DataFrame()
+    # CARGA DE DATOS (Sin caché para ver los cambios al instante)
+    res_v = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).execute()
+    df_ventas = pd.DataFrame(res_v.data) if res_v.data else pd.DataFrame()
 
     if not df_ventas.empty:
         if ver_consolidado:
-            # Lógica de consolidado (Sin selección para evitar errores)
-            meses_lista = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-            idx = meses_lista.index(mes_consulta)
-            meses_int = meses_lista[max(0, idx-3):idx+1]
-            df_mostrar = df_ventas[df_ventas["mes"].isin(meses_int)]
-            df_mostrar = df_mostrar.groupby(["cliente", "producto", "sector"]).agg({"total_s": "sum", "total_kg": "sum"}).reset_index()
-            st.subheader(f"📊 Consolidado")
-            st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
-            st.download_button("📥 Descargar Excel", generar_excel(df_mostrar), f"Consolidado_{mes_consulta}.xlsx")
+            # Lógica de consolidado...
+            st.subheader("📊 Consolidado")
+            st.dataframe(df_ventas, use_container_width=True, hide_index=True)
         else:
             df_mostrar = df_ventas[df_ventas["mes"] == mes_consulta]
             st.subheader(f"📅 Proyecciones de {mes_consulta}")
             
-            # --- TABLA CON SELECCIÓN AL COSTADO ---
-            df_con_check = df_mostrar.copy()
-            df_con_check.insert(0, "Sel", False) # Columna de check al inicio
-            
-            edited_df = st.data_editor(
-                df_con_check,
-                hide_index=True,
-                use_container_width=True,
-                column_config={
-                    "Sel": st.column_config.CheckboxColumn("✔", default=False),
-                    "id": None # Ocultamos el ID para estética
-                },
-                disabled=[col for col in df_con_check.columns if col != "Sel"]
-            )
+            if not df_mostrar.empty:
+                # TABLA CON CHECKS AL COSTADO
+                df_con_check = df_mostrar.copy()
+                df_con_check.insert(0, "Sel", False)
+                
+                # Usamos st.data_editor para capturar la selección
+                edited_df = st.data_editor(
+                    df_con_check,
+                    hide_index=True,
+                    use_container_width=True,
+                    column_config={
+                        "Sel": st.column_config.CheckboxColumn("✔", default=False),
+                        "id": st.column_config.TextColumn("ID", width="small")
+                    },
+                    disabled=[col for col in df_con_check.columns if col != "Sel"]
+                )
 
-            col_ex, col_ed = st.columns([1, 1])
-            with col_ex:
-                st.download_button("📥 Descargar Excel", generar_excel(df_mostrar), f"Reporte_{mes_consulta}.xlsx")
-            
-            with col_ed:
-                seleccionados = edited_df[edited_df["Sel"] == True]
-                if not seleccionados.empty:
-                    if st.button(f"✏️ Editar {len(seleccionados)} registros", type="primary", use_container_width=True):
-                        editar_multiple(seleccionados)
+                # Botones de Acción
+                c1, c2 = st.columns([1, 1])
+                with c1:
+                    st.download_button("📥 Excel", generar_excel(df_mostrar), f"Proyeccion_{mes_consulta}.xlsx")
+                with c2:
+                    seleccionados = edited_df[edited_df["Sel"] == True]
+                    if not seleccionados.empty:
+                        if st.button(f"✏️ Editar {len(seleccionados)} seleccionado(s)", type="primary", use_container_width=True):
+                            editar_multiple(seleccionados)
+            else:
+                st.warning(f"No hay datos para {mes_consulta}")
     else:
-        st.info("No se encontraron registros para este mes.")
+        st.info("Aún no tienes proyecciones registradas.")
+
 else:
     # Login
     st.title("Acceso")
