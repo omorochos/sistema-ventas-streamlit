@@ -107,7 +107,7 @@ else:
     meses_orden = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
     # IMPORTANTE: Seleccionamos también el campo 'mes' para poder filtrar
-    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes").eq("vendedor", st.session_state.usuario_logueado)
+    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes, sector").eq("vendedor", st.session_state.usuario_logueado)
 
     if ver_consolidado:
         idx = meses_orden.index(mes_consulta)
