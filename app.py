@@ -66,8 +66,8 @@ def formulario_nuevo():
         st.dataframe(df_temp, use_container_width=True, hide_index=True)
         
         if st.button("💾 GUARDAR TODO EN SUPABASE"):
-            # CORRECCIÓN: "Ventas" con V mayúscula
-            supabase.table("Ventas").insert(st.session_state.carrito_proyeccion).execute()
+            # Usamos "ventas" en minúsculas como muestra tu imagen image_2f6422.png
+            supabase.table("ventas").insert(st.session_state.carrito_proyeccion).execute()
             st.session_state.carrito_proyeccion = []
             st.success("¡Datos guardados permanentemente!")
             st.rerun()
@@ -77,8 +77,7 @@ def formulario_actualizar(fila):
     nueva_cant = st.number_input("Nueva cantidad:", min_value=1, step=1)
     if st.button("Confirmar"):
         info = INFO_PRODUCTOS[fila['producto']]
-        # CORRECCIÓN: "Ventas" con V mayúscula
-        supabase.table("Ventas").update({
+        supabase.table("ventas").update({
             "total_s": info["precio"] * nueva_cant,
             "total_kg": info["peso"] * nueva_cant
         }).eq("cliente", fila['cliente']).eq("producto", fila['producto']).execute()
@@ -108,8 +107,8 @@ else:
     # --- OBTENCIÓN DE DATOS DESDE SUPABASE ---
     meses_orden = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
-    # CORRECCIÓN: "Ventas" con V mayúscula y sin el filtro de vendedor por ahora
-    query = supabase.table("Ventas").select("cliente, producto, total_s, total_kg, mes, sector")
+    # IMPORTANTE: Nombres de columnas en minúsculas como tu tabla
+    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes, sector")
 
     if ver_consolidado:
         idx = meses_orden.index(mes_consulta)
@@ -121,18 +120,22 @@ else:
         query = query.eq("mes", mes_consulta)
         nombre_archivo = f"Proyeccion_{mes_consulta}.xlsx"
 
+    # Línea 124: Donde estaba el error
     data = query.execute()
     df = pd.DataFrame(data.data)
 
     # --- PROCESAMIENTO DE DATOS ---
     if not df.empty:
         if ver_consolidado:
+            # Agregamos por las columnas exactas: total_s y total_kg
             df = df.groupby(["cliente", "producto"]).agg({"total_s": "sum", "total_kg": "sum"}).reset_index()
         
+        # Renombramos para la vista del usuario
         df = df.rename(columns={"total_s": "Monto Soles", "total_kg": "Kg Proyectados"})
         df["Ventas kg"] = ""; df["Total"] = ""; df["Etapa de Venta"] = "Propuesta Económica"
         df = df[["cliente", "producto", "Monto Soles", "Kg Proyectados", "Ventas kg", "Total", "Etapa de Venta"]]
     else:
+        # Si está vacío, creamos las columnas con los nombres finales
         df = pd.DataFrame(columns=["cliente", "producto", "Monto Soles", "Kg Proyectados", "Ventas kg", "Total", "Etapa de Venta"])
 
     # --- BOTONES SUPERIORES ---
@@ -169,7 +172,7 @@ else:
     else:
         st.session_state.seleccion = pd.DataFrame()
     
-    # Totales
+    # Totales: Usando los nombres de columna renombrados
     t1, t2 = st.columns(2)
     t1.metric("Total Soles", f"S/ {df['Monto Soles'].sum():,.2f}")
     t2.metric("Total Kg", f"{df['Kg Proyectados'].sum():,.2f}")
