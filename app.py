@@ -15,20 +15,16 @@ supabase: Client = create_client(URL, KEY)
 @st.cache_data(ttl=600)  # Se actualiza cada 10 minutos
 def obtener_productos_maestros():
     try:
-        # Traemos la lista de productos de la tabla que creaste
+        # Traemos la lista de productos de la tabla 'Productos'
         res = supabase.table("Productos").select("*").execute()
-        return pd.DataFrame(res.data)
+        df = pd.DataFrame(res.data)
+        return df
     except Exception as e:
         st.error(f"Error al cargar base de productos: {e}")
         return pd.DataFrame()
 
+# Cargamos la base una sola vez al inicio
 df_maestro = obtener_productos_maestros()
-
-# Generar lista de clientes únicos para los selectores
-if not df_maestro.empty:
-    LISTA_CLIENTES = sorted(df_maestro["cliente"].unique().tolist())
-else:
-    LISTA_CLIENTES = []
 
 # --- FUNCIÓN EXCEL ---
 def generar_excel(df):
@@ -45,29 +41,44 @@ def formulario_nuevo():
 
     vendedor_actual = st.session_state.usuario_logueado
     
+    # 1. Verificamos si df_maestro tiene datos
+    if df_maestro.empty:
+        st.warning("⚠️ No se encontraron productos en la base de datos. Verifica la tabla 'Productos' en Supabase.")
+        return
+
+    # 2. Detectamos automáticamente cómo se llaman las columnas (Mayúsculas/Minúsculas)
+    col_cliente = "cliente" if "cliente" in df_maestro.columns else "Cliente"
+    col_prod = "producto" if "producto" in df_maestro.columns else "Producto"
+    col_sec = "sector" if "sector" in df_maestro.columns else "Sector"
+    col_pre = "precio" if "precio" in df_maestro.columns else "Precio"
+    col_pes = "peso" if "peso" in df_maestro.columns else "Peso"
+
     with st.container(border=True):
         c1, c2, c3 = st.columns([2, 2, 1])
         with c1:
             mes_sel = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
-            cliente_sel = st.selectbox("Cliente", LISTA_CLIENTES)
+            lista_clientes = sorted(df_maestro[col_cliente].unique().tolist())
+            cliente_sel = st.selectbox("Cliente", lista_clientes)
+
         with c2:
-            # FILTRADO DINÁMICO: Solo muestra productos del cliente seleccionado
-            productos_filtrados = df_maestro[df_maestro["cliente"] == cliente_sel]
-            prod_sel = st.selectbox("Producto", productos_filtrados["producto"].tolist())
+            # FILTRADO DINÁMICO
+            productos_filtrados = df_maestro[df_maestro[col_cliente] == cliente_sel]
+            prod_sel = st.selectbox("Producto", productos_filtrados[col_prod].tolist())
             cant_sel = st.number_input("Cantidad", min_value=1, step=1)
+
         with c3:
             st.write("###")
             if st.button("➕ Añadir"):
-                # Obtenemos info del producto directamente del DataFrame maestro
-                info = productos_filtrados[productos_filtrados["producto"] == prod_sel].iloc[0]
+                info = productos_filtrados[productos_filtrados[col_prod] == prod_sel].iloc[0]
+                
                 st.session_state.carrito_proyeccion.append({
                     "vendedor": vendedor_actual, 
                     "mes": mes_sel, 
                     "cliente": cliente_sel,
                     "producto": prod_sel, 
-                    "sector": info["sector"],
-                    "total_s": float(info["precio"] * cant_sel),
-                    "total_kg": float(info["peso"] * cant_sel)
+                    "sector": info[col_sec],
+                    "total_s": float(info[col_pre] * cant_sel),
+                    "total_kg": float(info[col_pes] * cant_sel)
                 })
 
     if st.session_state.carrito_proyeccion:
@@ -80,13 +91,18 @@ def formulario_nuevo():
 
 @st.dialog("Actualizar Registro", width="large")
 def formulario_actualizar(fila):
-    # Para actualizar, buscamos el precio/peso actual en la tabla maestra
     nueva_cant = st.number_input("Nueva cantidad:", min_value=1, step=1)
     if st.button("Confirmar"):
-        info = df_maestro[df_maestro['producto'] == fila['producto']].iloc[0]
+        # Buscamos precio/peso en la maestra para recalcular
+        col_prod = "producto" if "producto" in df_maestro.columns else "Producto"
+        col_pre = "precio" if "precio" in df_maestro.columns else "Precio"
+        col_pes = "peso" if "peso" in df_maestro.columns else "Peso"
+        
+        info = df_maestro[df_maestro[col_prod] == fila['producto']].iloc[0]
+        
         supabase.table("ventas").update({
-            "total_s": float(info["precio"] * nueva_cant),
-            "total_kg": float(info["peso"] * nueva_cant)
+            "total_s": float(info[col_pre] * nueva_cant),
+            "total_kg": float(info[col_pes] * nueva_cant)
         }).eq("cliente", fila['cliente']).eq("producto", fila['producto']).execute()
         st.rerun()
 
