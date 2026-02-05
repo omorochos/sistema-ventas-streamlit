@@ -66,7 +66,8 @@ def formulario_nuevo():
         st.dataframe(df_temp, use_container_width=True, hide_index=True)
         
         if st.button("💾 GUARDAR TODO EN SUPABASE"):
-            supabase.table("ventas").insert(st.session_state.carrito_proyeccion).execute()
+            # CORRECCIÓN: "Ventas" con V mayúscula
+            supabase.table("Ventas").insert(st.session_state.carrito_proyeccion).execute()
             st.session_state.carrito_proyeccion = []
             st.success("¡Datos guardados permanentemente!")
             st.rerun()
@@ -76,7 +77,8 @@ def formulario_actualizar(fila):
     nueva_cant = st.number_input("Nueva cantidad:", min_value=1, step=1)
     if st.button("Confirmar"):
         info = INFO_PRODUCTOS[fila['producto']]
-        supabase.table("ventas").update({
+        # CORRECCIÓN: "Ventas" con V mayúscula
+        supabase.table("Ventas").update({
             "total_s": info["precio"] * nueva_cant,
             "total_kg": info["peso"] * nueva_cant
         }).eq("cliente", fila['cliente']).eq("producto", fila['producto']).execute()
@@ -106,8 +108,8 @@ else:
     # --- OBTENCIÓN DE DATOS DESDE SUPABASE ---
     meses_orden = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
-    # CONSULTA MODIFICADA: Incluye 'sector' y quita el filtro de vendedor temporalmente para evitar errores
-    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes, sector")
+    # CORRECCIÓN: "Ventas" con V mayúscula y sin el filtro de vendedor por ahora
+    query = supabase.table("Ventas").select("cliente, producto, total_s, total_kg, mes, sector")
 
     if ver_consolidado:
         idx = meses_orden.index(mes_consulta)
