@@ -4,160 +4,125 @@ from supabase import create_client, Client
 from io import BytesIO
 import time
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Sistema Proyecciones PRO", layout="wide")
-
+# --- 1. CONEXIÓN ---
 try:
     supabase: Client = create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
 except Exception as e:
-    st.error(f"Error de conexión: {e}")
+    st.error(f"Error crítico de conexión: {e}")
 
-# --- FUNCIONES DE APOYO ---
+# --- 2. FUNCIONES DE EXCEL Y MESES ---
 def generar_excel(df):
     output = BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Proyecciones')
     return output.getvalue()
 
-def obtener_meses_anteriores(mes_actual):
+def obtener_rango_meses(mes_actual):
     meses = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", 
              "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-    try:
-        idx = meses.index(mes_actual)
-        return meses[max(0, idx-3):idx+1]
-    except:
-        return [mes_actual]
+    idx = meses.index(mes_actual)
+    return meses[max(0, idx-3):idx+1]
 
-# --- DIALOGO DE EDICIÓN ---
-@st.dialog("Editar Kg de Registros Seleccionados", width="large")
+# --- 3. DIÁLOGO DE EDICIÓN (REFORZADO) ---
+@st.dialog("Editar Kg de Registros", width="large")
 def editar_multiple(filas_seleccionadas):
-    st.info("Modifica los kilogramos. El sistema recalculará los soles automáticamente.")
+    st.warning("Se actualizarán los Kg y los Soles proporcionalmente.")
     
-    cambios_preparados = []
-    
-    for i, fila in filas_seleccionadas.iterrows():
-        # CORRECCIÓN CLAVE: Forzamos el ID a ser un entero puro de Python
-        id_real = int(float(fila['id']))
-        
+    cambios_finales = []
+    for _, fila in filas_seleccionadas.iterrows():
+        id_fijo = int(fila['id']) # Forzamos entero puro
         with st.container(border=True):
-            st.markdown(f"**Cliente:** {fila['cliente']} | **Producto:** {fila['producto']}")
+            st.write(f"**{fila['cliente']}** - {fila['producto']}")
+            n_kg = st.number_input(f"Kg (ID {id_fijo})", value=float(fila['total_kg']), min_value=0.1, key=f"k_{id_fijo}")
             
-            n_kg = st.number_input(
-                f"Nuevos Kg (ID {id_real})", 
-                value=float(fila['total_kg']), 
-                min_value=0.1,
-                key=f"input_kg_{id_real}"
-            )
+            # Cálculo de soles
+            precio_u = float(fila['total_s']) / float(fila['total_kg']) if float(fila['total_kg']) > 0 else 0
+            n_s = round(n_kg * precio_u, 2)
             
-            # Recalcular soles (total_s) manteniendo el precio unitario
-            precio_unit = float(fila['total_s']) / float(fila['total_kg']) if float(fila['total_kg']) > 0 else 0
-            n_s = n_kg * precio_unit
-            
-            cambios_preparados.append({
-                "id": id_real,
-                "total_kg": float(n_kg),
-                "total_s": float(n_s)
-            })
-    
-    st.divider()
-    
-    if st.button("💾 GUARDAR TODOS LOS CAMBIOS", type="primary", use_container_width=True):
+            cambios_finales.append({"p_id": id_fijo, "p_kg": n_kg, "p_s": n_s})
+
+    if st.button("💾 CONFIRMAR GUARDADO FINAL", type="primary", use_container_width=True):
         exitos = 0
-        with st.spinner("Actualizando en la nube..."):
-            for cambio in cambios_preparados:
+        with st.spinner("Escribiendo en la base de datos..."):
+            for c in cambios_finales:
+                # Intentamos la actualización con un formato más simple y directo
                 try:
-                    # Usamos .match para asegurar coincidencia exacta de ID
                     res = supabase.table("ventas").update({
-                        "total_kg": cambio["total_kg"],
-                        "total_s": cambio["total_s"]
-                    }).match({"id": cambio["id"]}).execute()
+                        "total_kg": c["p_kg"],
+                        "total_s": c["p_s"]
+                    }).eq("id", c["p_id"]).execute()
                     
                     if res.data:
                         exitos += 1
                 except Exception as e:
-                    st.error(f"Error en ID {cambio['id']}: {e}")
+                    st.error(f"Error en ID {c['p_id']}: {e}")
         
         if exitos > 0:
-            st.success(f"✅ Se actualizaron {exitos} registros.")
+            st.success(f"✅ ¡Hecho! {exitos} filas actualizadas.")
             time.sleep(1)
             st.rerun()
 
-# --- INTERFAZ PRINCIPAL ---
+# --- 4. INTERFAZ PRINCIPAL ---
+st.set_page_config(page_title="Sistema Proyecciones", layout="wide")
+
 if "autenticado" not in st.session_state: st.session_state.autenticado = False
 
 if st.session_state.autenticado:
-    # Sidebar con todas tus opciones originales
+    # SIDEBAR
     st.sidebar.title(f"Usuario: {st.session_state.usuario_logueado}")
-    mes_consulta = st.sidebar.selectbox("Mes de consulta", 
-        ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
+    mes_sel = st.sidebar.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
+    consolidado = st.sidebar.toggle("Ver últimos 3 meses")
     
-    ver_consolidado = st.sidebar.toggle("Ver Consolidado (3 meses anteriores)")
-    
-    if st.sidebar.button("Cerrar Sesión"):
+    if st.sidebar.button("Salir"):
         st.session_state.autenticado = False
         st.rerun()
 
-    # Carga de datos
+    # CARGA DE DATOS
     try:
-        if ver_consolidado:
-            meses_filtro = obtener_meses_anteriores(mes_consulta)
+        if consolidado:
+            meses_filtro = obtener_rango_meses(mes_sel)
             res = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).in_("mes", meses_filtro).execute()
-            titulo_tabla = f"📊 Consolidado: {', '.join(meses_filtro)}"
         else:
-            res = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).eq("mes", mes_consulta).execute()
-            titulo_tabla = f"📅 Proyecciones de {mes_consulta}"
-            
+            res = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).eq("mes", mes_sel).execute()
+        
         df = pd.DataFrame(res.data) if res.data else pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error al cargar: {e}")
+    except:
         df = pd.DataFrame()
 
+    # VISUALIZACIÓN
     if not df.empty:
-        st.subheader(titulo_tabla)
+        st.subheader(f"Data de {mes_sel} (Consolidado: {'Si' if consolidado else 'No'})")
         
-        # Preparamos el editor con columna de selección
-        df_edit = df.copy()
-        df_edit.insert(0, "Seleccionar", False)
+        # Tabla con selección
+        df_view = df.copy()
+        df_view.insert(0, "Seleccionar", False)
         
-        editor_principal = st.data_editor(
-            df_edit,
+        editor = st.data_editor(
+            df_view,
             hide_index=True,
             use_container_width=True,
-            column_config={
-                "Seleccionar": st.column_config.CheckboxColumn("✔", default=False),
-                "id": st.column_config.NumberColumn("ID", format="%d"),
-                "vendedor": None # Ocultamos vendedor para ahorrar espacio
-            },
-            disabled=[c for c in df_edit.columns if c != "Seleccionar"]
+            column_config={"Seleccionar": st.column_config.CheckboxColumn("✔")},
+            disabled=[c for c in df_view.columns if c != "Seleccionar"]
         )
 
-        # Botones de Acción (Excel y Edición)
-        col_excel, col_edit = st.columns(2)
-        
-        with col_excel:
-            nombre_archivo = f"Consolidado_{mes_consulta}.xlsx" if ver_consolidado else f"Reporte_{mes_consulta}.xlsx"
-            st.download_button(
-                label="📥 Descargar Excel",
-                data=generar_excel(df),
-                file_name=nombre_archivo,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-            
-        with col_edit:
-            seleccionados = editor_principal[editor_principal["Seleccionar"] == True]
+        # BOTONES
+        c1, c2 = st.columns(2)
+        with c1:
+            st.download_button("📥 Descargar Excel", generar_excel(df), f"Reporte_{mes_sel}.xlsx", use_container_width=True)
+        with c2:
+            seleccionados = editor[editor["Seleccionar"] == True]
             if not seleccionados.empty:
-                if st.button(f"✏️ Editar {len(seleccionados)} seleccionado(s)", type="primary", use_container_width=True):
+                if st.button(f"✏️ Editar {len(seleccionados)} filas", type="primary", use_container_width=True):
                     editar_multiple(seleccionados)
     else:
-        st.warning(f"No hay datos para mostrar en {mes_consulta}.")
+        st.info(f"No hay datos para {mes_sel}.")
 
 else:
-    # Login
-    st.title("Acceso Sistema de Ventas")
+    # LOGIN
+    st.title("Acceso")
     u = st.text_input("Usuario")
     p = st.text_input("Password", type="password")
-    if st.button("Entrar", use_container_width=True):
+    if st.button("Entrar"):
         if u == "MARIA_AVILA" and p == "maria2026":
             st.session_state.autenticado, st.session_state.usuario_logueado = True, u
             st.rerun()
