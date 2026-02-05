@@ -7,26 +7,28 @@ from io import BytesIO
 st.set_page_config(page_title="Sistema Proyecciones PRO", layout="wide")
 
 # --- CONEXIÓN A SUPABASE ---
-# Verifica que en Streamlit Cloud no existan errores de formato en los Secrets
 URL: str = st.secrets["SUPABASE_URL"]
 KEY: str = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(URL, KEY)
 
-# --- DATOS MAESTROS ---
-DATA_MAESTRA = {
-    "DELOSI S.A": ["KIT FOOD 6", "NEOCLOR DX PLUS"],
-    "CINEPLANET": ["LIMPIADOR MULTIUSOS", "DESINFECTANTE"],
-    "SAGA FALABELLA": ["PRODUCTO A", "PRODUCTO B"]
-}
+# --- CARGAR MEGA BASE DE PRODUCTOS (DINÁMICA) ---
+@st.cache_data(ttl=600)  # Se actualiza cada 10 minutos
+def obtener_productos_maestros():
+    try:
+        # Traemos la lista de productos de la tabla que creaste
+        res = supabase.table("Productos").select("*").execute()
+        return pd.DataFrame(res.data)
+    except Exception as e:
+        st.error(f"Error al cargar base de productos: {e}")
+        return pd.DataFrame()
 
-INFO_PRODUCTOS = {
-    "KIT FOOD 6": {"sector": "Alimentos y Bebidas", "precio": 15.5, "peso": 1.2},
-    "NEOCLOR DX PLUS": {"sector": "Alimentos y Bebidas", "precio": 145.0, "peso": 23.404},
-    "LIMPIADOR MULTIUSOS": {"sector": "Limpieza", "precio": 10.0, "peso": 5.0},
-    "DESINFECTANTE": {"sector": "Limpieza", "precio": 12.0, "peso": 1.0},
-    "PRODUCTO A": {"sector": "Retail", "precio": 20.0, "peso": 0.5},
-    "PRODUCTO B": {"Retail": "Retail", "precio": 25.0, "peso": 1.0}
-}
+df_maestro = obtener_productos_maestros()
+
+# Generar lista de clientes únicos para los selectores
+if not df_maestro.empty:
+    LISTA_CLIENTES = sorted(df_maestro["cliente"].unique().tolist())
+else:
+    LISTA_CLIENTES = []
 
 # --- FUNCIÓN EXCEL ---
 def generar_excel(df):
@@ -47,14 +49,17 @@ def formulario_nuevo():
         c1, c2, c3 = st.columns([2, 2, 1])
         with c1:
             mes_sel = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
-            cliente_sel = st.selectbox("Cliente", list(DATA_MAESTRA.keys()))
+            cliente_sel = st.selectbox("Cliente", LISTA_CLIENTES)
         with c2:
-            prod_sel = st.selectbox("Producto", DATA_MAESTRA[cliente_sel])
+            # FILTRADO DINÁMICO: Solo muestra productos del cliente seleccionado
+            productos_filtrados = df_maestro[df_maestro["cliente"] == cliente_sel]
+            prod_sel = st.selectbox("Producto", productos_filtrados["producto"].tolist())
             cant_sel = st.number_input("Cantidad", min_value=1, step=1)
         with c3:
             st.write("###")
             if st.button("➕ Añadir"):
-                info = INFO_PRODUCTOS[prod_sel]
+                # Obtenemos info del producto directamente del DataFrame maestro
+                info = productos_filtrados[productos_filtrados["producto"] == prod_sel].iloc[0]
                 st.session_state.carrito_proyeccion.append({
                     "vendedor": vendedor_actual, 
                     "mes": mes_sel, 
@@ -75,9 +80,10 @@ def formulario_nuevo():
 
 @st.dialog("Actualizar Registro", width="large")
 def formulario_actualizar(fila):
+    # Para actualizar, buscamos el precio/peso actual en la tabla maestra
     nueva_cant = st.number_input("Nueva cantidad:", min_value=1, step=1)
     if st.button("Confirmar"):
-        info = INFO_PRODUCTOS[fila['producto']]
+        info = df_maestro[df_maestro['producto'] == fila['producto']].iloc[0]
         supabase.table("ventas").update({
             "total_s": float(info["precio"] * nueva_cant),
             "total_kg": float(info["peso"] * nueva_cant)
@@ -100,22 +106,17 @@ if not st.session_state.autenticado:
         else:
             st.error("Credenciales incorrectas")
 else:
-    # --- FILTROS ---
+    # --- FILTROS LADO IZQUIERDO ---
     st.sidebar.header("Configuración")
     mes_consulta = st.sidebar.selectbox("Mes:", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
     ver_consolidado = st.sidebar.toggle("Ver Consolidado (3 meses anteriores)")
 
-    # --- OBTENCIÓN DE DATOS ---
+    # --- OBTENCIÓN DE DATOS (TABLA VENTAS) ---
     try:
-        # Consulta base simplificada para evitar errores de sintaxis
-        query = supabase.table("ventas").select("*")
-        
-        # Ejecutamos la consulta y luego filtramos con Pandas para mayor seguridad
-        res = query.execute()
+        res = supabase.table("ventas").select("*").execute()
         df_raw = pd.DataFrame(res.data)
         
         if not df_raw.empty:
-            # Filtramos por vendedor y mes usando Pandas
             df = df_raw[df_raw['vendedor'] == st.session_state.usuario_logueado]
             
             if ver_consolidado:
@@ -127,9 +128,7 @@ else:
             else:
                 df = df[df['mes'] == mes_consulta]
 
-            # Renombrar para vista
             df = df.rename(columns={"total_s": "Monto Soles", "total_kg": "Kg Proyectados"})
-            # Asegurar que existan todas las columnas para la tabla
             for col in ["Ventas kg", "Total", "Etapa de Venta"]:
                 if col not in df.columns: df[col] = ""
             df["Etapa de Venta"] = "Propuesta Económica"
