@@ -7,7 +7,6 @@ from io import BytesIO
 st.set_page_config(page_title="Sistema Proyecciones PRO", layout="wide")
 
 # --- CONEXIÓN A SUPABASE ---
-# Asegúrate de que en Streamlit Cloud > Settings > Secrets estén bien pegadas
 try:
     URL: str = st.secrets["SUPABASE_URL"]
     KEY: str = st.secrets["SUPABASE_KEY"]
@@ -16,16 +15,14 @@ except Exception as e:
     st.error(f"Error en las credenciales de Secrets: {e}")
 
 # --- CARGAR MEGA BASE DE PRODUCTOS ---
-@st.cache_data(ttl=60)  # Actualiza cada 1 minuto para pruebas
+@st.cache_data(ttl=60)
 def obtener_productos_maestros():
     try:
-        # Intentamos leer la tabla Productos
         res = supabase.table("Productos").select("*").execute()
         if not res.data:
             return pd.DataFrame()
         return pd.DataFrame(res.data)
     except Exception as e:
-        # Si sale el error 401 de tu imagen, se mostrará aquí claramente
         st.error(f"⚠️ Error de conexión con Supabase: {e}")
         return pd.DataFrame()
 
@@ -80,13 +77,26 @@ def formulario_nuevo():
                 })
 
     if st.session_state.carrito_proyeccion:
+        st.write("### Vista previa del registro")
         st.table(pd.DataFrame(st.session_state.carrito_proyeccion))
+        
         if st.button("💾 GUARDAR EN NUBE"):
             try:
-                supabase.table("ventas").insert(st.session_state.carrito_proyeccion).execute()
-                st.session_state.carrito_proyeccion = []
-                st.success("¡Guardado correctamente!")
-                st.rerun()
+                # Convertimos a lista de diccionarios
+                datos_a_guardar = pd.DataFrame(st.session_state.carrito_proyeccion).to_dict(orient='records')
+                
+                # Eliminamos la columna 'id' si por error se coló en el carrito
+                # Esto permite que Supabase use su propia secuencia autoincrementable
+                for fila in datos_a_guardar:
+                    fila.pop('id', None) 
+                
+                # Enviamos a la tabla 'ventas'
+                resultado = supabase.table("ventas").insert(datos_a_guardar).execute()
+                
+                if resultado.data:
+                    st.success("¡Proyección guardada con éxito en la nube!")
+                    st.session_state.carrito_proyeccion = [] # Limpiamos el carrito local
+                    st.rerun()
             except Exception as e:
                 st.error(f"Error al guardar: {e}")
 
@@ -120,4 +130,4 @@ else:
         else:
             st.info("No tienes registros guardados aún.")
     except:
-        st.warning("No se pudieron cargar las ventas. Verifica la tabla 'ventas' en Supabase.")
+        st.warning("No se pudieron cargar las ventas. Verifica la conexión.")
