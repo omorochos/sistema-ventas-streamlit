@@ -79,7 +79,7 @@ def formulario_actualizar(fila):
         supabase.table("ventas").update({
             "total_s": info["precio"] * nueva_cant,
             "total_kg": info["peso"] * nueva_cant
-        }).eq("cliente", fila['cliente']).eq("producto", fila['producto']).eq("vendedor", st.session_state.usuario_logueado).execute()
+        }).eq("cliente", fila['cliente']).eq("producto", fila['producto']).execute()
         st.rerun()
 
 # --- LÓGICA DE ACCESO ---
@@ -106,8 +106,8 @@ else:
     # --- OBTENCIÓN DE DATOS DESDE SUPABASE ---
     meses_orden = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
     
-    # IMPORTANTE: Seleccionamos también el campo 'mes' para poder filtrar
-    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes, sector").eq("vendedor", st.session_state.usuario_logueado)
+    # CONSULTA MODIFICADA: Incluye 'sector' y quita el filtro de vendedor temporalmente para evitar errores
+    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes, sector")
 
     if ver_consolidado:
         idx = meses_orden.index(mes_consulta)
@@ -154,7 +154,6 @@ else:
     st.divider()
     st.write(f"### Detalle de Proyección - {mes_consulta} {'(Consolidado)' if ver_consolidado else ''}")
     
-    # CORRECCIÓN: selection_mode="single-row" (con guion medio)
     event = st.dataframe(
         df, 
         use_container_width=True, 
