@@ -22,29 +22,34 @@ def generar_excel(df):
 # --- DIALOG: EDICIÓN MÚLTIPLE ---
 @st.dialog("Editar Kg de Registros Seleccionados", width="large")
 def editar_multiple(filas_seleccionadas):
-    st.info("Modifica los Kg. Los cambios se enviarán uno por uno a la base de datos.")
+    st.warning("⚠️ Asegúrate de que los IDs coincidan con la tabla 'ventas' en Supabase.")
     
     cambios_a_realizar = []
     
     for i, fila in filas_seleccionadas.iterrows():
+        # LIMPIEZA DE ID: Aseguramos que sea un entero
+        id_real = int(fila['id'])
+        
         with st.container(border=True):
-            st.markdown(f"**ID:** {fila['id']} | **Cliente:** {fila['cliente']} | **Producto:** {fila['producto']}")
+            st.markdown(f"**Registro ID:** `{id_real}` | **Cliente:** {fila['cliente']}")
+            st.markdown(f"**Producto:** {fila['producto']}")
             
-            # Input de KG
             n_kg = st.number_input(
-                f"Nuevos Kg", 
+                f"Nuevos Kg para el ID {id_real}", 
                 value=float(fila['total_kg']), 
-                min_value=0.0,
-                key=f"input_edit_{fila['id']}"
+                min_value=0.1, # Evitamos 0 para no romper el cálculo de soles
+                key=f"edit_input_{id_real}"
             )
             
-            # Recalcular soles basado en el precio unitario original
-            # total_s / total_kg = precio por kg
-            precio_unitario = float(fila['total_s']) / float(fila['total_kg']) if float(fila['total_kg']) > 0 else 0
+            # Cálculo de soles (total_s)
+            # Intentamos obtener el precio unitario original
+            old_kg = float(fila['total_kg'])
+            old_s = float(fila['total_s'])
+            precio_unitario = old_s / old_kg if old_kg > 0 else 0
             n_s = n_kg * precio_unitario
             
             cambios_a_realizar.append({
-                "id": int(fila['id']),
+                "id": id_real,
                 "total_kg": float(n_kg),
                 "total_s": float(n_s)
             })
@@ -53,31 +58,29 @@ def editar_multiple(filas_seleccionadas):
     
     if st.button("💾 CONFIRMAR Y GUARDAR EN NUBE", type="primary", use_container_width=True):
         exitos = 0
-        errores = 0
         
-        with st.spinner("Conectando con Supabase..."):
+        with st.spinner("Actualizando base de datos..."):
             for cambio in cambios_a_realizar:
                 try:
-                    # EJECUCIÓN DIRECTA
-                    resultado = supabase.table("ventas").update({
+                    # USAMOS .match({'id': cambio['id']}) que es más estricto
+                    res = supabase.table("ventas").update({
                         "total_kg": cambio["total_kg"],
                         "total_s": cambio["total_s"]
-                    }).eq("id", cambio["id"]).execute()
+                    }).match({'id': cambio['id']}).execute()
                     
-                    # Verificamos si realmente se editó algo
-                    if len(resultado.data) > 0:
+                    if res.data:
                         exitos += 1
-                    else:
-                        st.error(f"No se encontró el registro ID {cambio['id']} para actualizar.")
                 except Exception as e:
                     st.error(f"Error en ID {cambio['id']}: {str(e)}")
-                    errores += 1
         
         if exitos > 0:
-            st.success(f"✅ Se actualizaron {exitos} registros correctamente.")
-            time.sleep(1) # Pausa pequeña para que veas el mensaje
-            st.cache_data.clear() # Limpia cualquier dato viejo
+            st.success(f"✅ ¡Éxito! Se actualizaron {exitos} registros.")
+            time.sleep(1.5)
+            # Limpiamos caché de Streamlit y reiniciamos
+            st.cache_data.clear()
             st.rerun()
+        else:
+            st.error("No se pudo actualizar ningún registro. Verifica que el ID exista en la tabla 'ventas'.")
 
 # --- CUERPO PRINCIPAL ---
 if "autenticado" not in st.session_state: st.session_state.autenticado = False
@@ -86,14 +89,17 @@ if st.session_state.autenticado:
     st.sidebar.title(f"Usuario: {st.session_state.usuario_logueado}")
     mes_consulta = st.sidebar.selectbox("Mes de consulta", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
     
-    # BOTÓN DE SALIR (Opcional pero útil)
     if st.sidebar.button("Cerrar Sesión"):
         st.session_state.autenticado = False
         st.rerun()
 
-    # CARGA DE DATOS SIN CACHÉ (PARA VER CAMBIOS REALES)
-    res_v = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).execute()
-    df_ventas = pd.DataFrame(res_v.data) if res_v.data else pd.DataFrame()
+    # CARGA FRESCA DE DATOS
+    try:
+        res_v = supabase.table("ventas").select("*").eq("vendedor", st.session_state.usuario_logueado).execute()
+        df_ventas = pd.DataFrame(res_v.data) if res_v.data else pd.DataFrame()
+    except Exception as e:
+        st.error(f"Error al cargar datos: {e}")
+        df_ventas = pd.DataFrame()
 
     if not df_ventas.empty:
         df_mostrar = df_ventas[df_ventas["mes"] == mes_consulta].copy()
@@ -101,38 +107,36 @@ if st.session_state.autenticado:
         st.subheader(f"📅 Proyecciones de {mes_consulta}")
         
         if not df_mostrar.empty:
-            # PREPARAR TABLA PARA SELECCIÓN
+            # Check de selección
             df_mostrar.insert(0, "Sel", False)
             
-            # EDITOR DE DATOS
+            # Editor de tabla
             edited_df = st.data_editor(
                 df_mostrar,
                 hide_index=True,
                 use_container_width=True,
                 column_config={
                     "Sel": st.column_config.CheckboxColumn("✔", default=False),
-                    "id": st.column_config.NumberColumn("ID", disabled=True),
-                    "vendedor": None # Ocultar para ganar espacio
+                    "id": st.column_config.NumberColumn("ID", help="ID único de la venta", format="%d"),
+                    "vendedor": None
                 },
                 disabled=[c for c in df_mostrar.columns if c != "Sel"]
             )
 
-            # ACCIONES
-            col_izq, col_der = st.columns(2)
-            with col_izq:
-                st.download_button("📥 Excel", generar_excel(df_mostrar.drop(columns=["Sel"])), f"Data_{mes_consulta}.xlsx")
-            
-            with col_der:
+            col1, col2 = st.columns(2)
+            with col1:
+                st.download_button("📥 Excel", generar_excel(df_mostrar.drop(columns=["Sel"])), f"Reporte_{mes_consulta}.xlsx")
+            with col2:
                 seleccionados = edited_df[edited_df["Sel"] == True]
                 if not seleccionados.empty:
-                    if st.button(f"✏️ Editar {len(seleccionados)} filas seleccionadas", type="primary", use_container_width=True):
+                    if st.button(f"✏️ Editar {len(seleccionados)} filas", type="primary", use_container_width=True):
                         editar_multiple(seleccionados)
         else:
-            st.warning(f"No hay datos registrados para {mes_consulta}.")
+            st.warning(f"No hay registros para {mes_consulta}.")
     else:
-        st.info("No hay registros en la base de datos.")
-
+        st.info("La tabla 'ventas' está vacía.")
 else:
+    # Login
     st.title("Acceso")
     u = st.text_input("Usuario")
     p = st.text_input("Password", type="password")
