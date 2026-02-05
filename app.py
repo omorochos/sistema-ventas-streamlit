@@ -7,6 +7,7 @@ from io import BytesIO
 st.set_page_config(page_title="Sistema Proyecciones PRO", layout="wide")
 
 # --- CONEXIÓN A SUPABASE ---
+# Verifica que en Streamlit Cloud no existan errores de formato en los Secrets
 URL: str = st.secrets["SUPABASE_URL"]
 KEY: str = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(URL, KEY)
@@ -24,7 +25,7 @@ INFO_PRODUCTOS = {
     "LIMPIADOR MULTIUSOS": {"sector": "Limpieza", "precio": 10.0, "peso": 5.0},
     "DESINFECTANTE": {"sector": "Limpieza", "precio": 12.0, "peso": 1.0},
     "PRODUCTO A": {"sector": "Retail", "precio": 20.0, "peso": 0.5},
-    "PRODUCTO B": {"sector": "Retail", "precio": 25.0, "peso": 1.0}
+    "PRODUCTO B": {"Retail": "Retail", "precio": 25.0, "peso": 1.0}
 }
 
 # --- FUNCIÓN EXCEL ---
@@ -40,36 +41,36 @@ def formulario_nuevo():
     if "carrito_proyeccion" not in st.session_state:
         st.session_state.carrito_proyeccion = []
 
-    vendedor = st.session_state.usuario_logueado
+    vendedor_actual = st.session_state.usuario_logueado
     
     with st.container(border=True):
         c1, c2, c3 = st.columns([2, 2, 1])
         with c1:
-            mes = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
-            cliente = st.selectbox("Cliente", list(DATA_MAESTRA.keys()))
+            mes_sel = st.selectbox("Mes", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
+            cliente_sel = st.selectbox("Cliente", list(DATA_MAESTRA.keys()))
         with c2:
-            producto = st.selectbox("Producto", DATA_MAESTRA[cliente])
-            cantidad = st.number_input("Cantidad", min_value=1, step=1)
+            prod_sel = st.selectbox("Producto", DATA_MAESTRA[cliente_sel])
+            cant_sel = st.number_input("Cantidad", min_value=1, step=1)
         with c3:
             st.write("###")
             if st.button("➕ Añadir"):
-                info = INFO_PRODUCTOS[producto]
+                info = INFO_PRODUCTOS[prod_sel]
                 st.session_state.carrito_proyeccion.append({
-                    "vendedor": vendedor, "mes": mes, "cliente": cliente,
-                    "producto": producto, "sector": info["sector"],
-                    "total_s": info["precio"] * cantidad,
-                    "total_kg": info["peso"] * cantidad
+                    "vendedor": vendedor_actual, 
+                    "mes": mes_sel, 
+                    "cliente": cliente_sel,
+                    "producto": prod_sel, 
+                    "sector": info["sector"],
+                    "total_s": float(info["precio"] * cant_sel),
+                    "total_kg": float(info["peso"] * cant_sel)
                 })
 
     if st.session_state.carrito_proyeccion:
-        df_temp = pd.DataFrame(st.session_state.carrito_proyeccion)
-        st.dataframe(df_temp, use_container_width=True, hide_index=True)
-        
+        st.dataframe(pd.DataFrame(st.session_state.carrito_proyeccion), use_container_width=True, hide_index=True)
         if st.button("💾 GUARDAR TODO EN SUPABASE"):
-            # Usamos "ventas" en minúsculas como muestra tu imagen image_2f6422.png
             supabase.table("ventas").insert(st.session_state.carrito_proyeccion).execute()
             st.session_state.carrito_proyeccion = []
-            st.success("¡Datos guardados permanentemente!")
+            st.success("¡Datos guardados!")
             st.rerun()
 
 @st.dialog("Actualizar Registro", width="large")
@@ -78,8 +79,8 @@ def formulario_actualizar(fila):
     if st.button("Confirmar"):
         info = INFO_PRODUCTOS[fila['producto']]
         supabase.table("ventas").update({
-            "total_s": info["precio"] * nueva_cant,
-            "total_kg": info["peso"] * nueva_cant
+            "total_s": float(info["precio"] * nueva_cant),
+            "total_kg": float(info["peso"] * nueva_cant)
         }).eq("cliente", fila['cliente']).eq("producto", fila['producto']).execute()
         st.rerun()
 
@@ -104,75 +105,68 @@ else:
     mes_consulta = st.sidebar.selectbox("Mes:", ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"])
     ver_consolidado = st.sidebar.toggle("Ver Consolidado (3 meses anteriores)")
 
-    # --- OBTENCIÓN DE DATOS DESDE SUPABASE ---
-    meses_orden = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
-    
-    # IMPORTANTE: Nombres de columnas en minúsculas como tu tabla
-    query = supabase.table("ventas").select("cliente, producto, total_s, total_kg, mes, sector")
-
-    if ver_consolidado:
-        idx = meses_orden.index(mes_consulta)
-        meses_a_buscar = [meses_orden[i] for i in range(max(0, idx-3), idx)]
-        if not meses_a_buscar: meses_a_buscar = [mes_consulta]
-        query = query.in_("mes", meses_a_buscar)
-        nombre_archivo = f"Consolidado_{mes_consulta}.xlsx"
-    else:
-        query = query.eq("mes", mes_consulta)
-        nombre_archivo = f"Proyeccion_{mes_consulta}.xlsx"
-
-    # Línea 124: Donde estaba el error
-    data = query.execute()
-    df = pd.DataFrame(data.data)
-
-    # --- PROCESAMIENTO DE DATOS ---
-    if not df.empty:
-        if ver_consolidado:
-            # Agregamos por las columnas exactas: total_s y total_kg
-            df = df.groupby(["cliente", "producto"]).agg({"total_s": "sum", "total_kg": "sum"}).reset_index()
+    # --- OBTENCIÓN DE DATOS ---
+    try:
+        # Consulta base simplificada para evitar errores de sintaxis
+        query = supabase.table("ventas").select("*")
         
-        # Renombramos para la vista del usuario
-        df = df.rename(columns={"total_s": "Monto Soles", "total_kg": "Kg Proyectados"})
-        df["Ventas kg"] = ""; df["Total"] = ""; df["Etapa de Venta"] = "Propuesta Económica"
-        df = df[["cliente", "producto", "Monto Soles", "Kg Proyectados", "Ventas kg", "Total", "Etapa de Venta"]]
-    else:
-        # Si está vacío, creamos las columnas con los nombres finales
+        # Ejecutamos la consulta y luego filtramos con Pandas para mayor seguridad
+        res = query.execute()
+        df_raw = pd.DataFrame(res.data)
+        
+        if not df_raw.empty:
+            # Filtramos por vendedor y mes usando Pandas
+            df = df_raw[df_raw['vendedor'] == st.session_state.usuario_logueado]
+            
+            if ver_consolidado:
+                meses_orden = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
+                idx = meses_orden.index(mes_consulta)
+                meses_interes = meses_orden[max(0, idx-3):idx+1]
+                df = df[df['mes'].isin(meses_interes)]
+                df = df.groupby(["cliente", "producto"]).agg({"total_s": "sum", "total_kg": "sum"}).reset_index()
+            else:
+                df = df[df['mes'] == mes_consulta]
+
+            # Renombrar para vista
+            df = df.rename(columns={"total_s": "Monto Soles", "total_kg": "Kg Proyectados"})
+            # Asegurar que existan todas las columnas para la tabla
+            for col in ["Ventas kg", "Total", "Etapa de Venta"]:
+                if col not in df.columns: df[col] = ""
+            df["Etapa de Venta"] = "Propuesta Económica"
+            df = df[["cliente", "producto", "Monto Soles", "Kg Proyectados", "Ventas kg", "Total", "Etapa de Venta"]]
+        else:
+            df = pd.DataFrame(columns=["cliente", "producto", "Monto Soles", "Kg Proyectados", "Ventas kg", "Total", "Etapa de Venta"])
+
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
         df = pd.DataFrame(columns=["cliente", "producto", "Monto Soles", "Kg Proyectados", "Ventas kg", "Total", "Etapa de Venta"])
 
-    # --- BOTONES SUPERIORES ---
-    col_btns = st.columns([1, 1.2, 1.5, 1, 4])
-    with col_btns[0]:
+    # --- INTERFAZ PRINCIPAL ---
+    c_btns = st.columns([1, 1.2, 1.5, 1, 4])
+    with c_btns[0]:
         if st.button("📄 Nuevo"): formulario_nuevo()
-    with col_btns[1]:
+    with c_btns[1]:
         if st.button("🔄 Actualizar"):
             if "seleccion" in st.session_state and not st.session_state.seleccion.empty:
                 formulario_actualizar(st.session_state.seleccion.iloc[0])
-            else:
-                st.warning("Selecciona una fila")
-    with col_btns[2]:
-        excel_bin = generar_excel(df)
-        st.download_button("📊 Transformar Excel", data=excel_bin, file_name=nombre_archivo)
-    with col_btns[3]:
+            else: st.warning("Selecciona una fila")
+    with c_btns[2]:
+        st.download_button("📊 Excel", data=generar_excel(df), file_name=f"{mes_consulta}.xlsx")
+    with c_btns[3]:
         if st.button("🚪 Salir"):
             st.session_state.autenticado = False
             st.rerun()
 
     st.divider()
-    st.write(f"### Detalle de Proyección - {mes_consulta} {'(Consolidado)' if ver_consolidado else ''}")
+    st.write(f"### Detalle - {mes_consulta}")
     
-    event = st.dataframe(
-        df, 
-        use_container_width=True, 
-        hide_index=True, 
-        on_select="rerun", 
-        selection_mode="single-row"
-    )
+    event = st.dataframe(df, use_container_width=True, hide_index=True, on_select="rerun", selection_mode="single-row")
 
     if len(event.selection.rows) > 0:
         st.session_state.seleccion = df.iloc[event.selection.rows]
     else:
         st.session_state.seleccion = pd.DataFrame()
     
-    # Totales: Usando los nombres de columna renombrados
     t1, t2 = st.columns(2)
-    t1.metric("Total Soles", f"S/ {df['Monto Soles'].sum():,.2f}")
-    t2.metric("Total Kg", f"{df['Kg Proyectados'].sum():,.2f}")
+    t1.metric("Total Soles", f"S/ {df['Monto Soles'].sum() if not df.empty else 0:,.2f}")
+    t2.metric("Total Kg", f"{df['Kg Proyectados'].sum() if not df.empty else 0:,.2f}")
